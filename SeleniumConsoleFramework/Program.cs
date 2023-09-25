@@ -15,7 +15,7 @@ namespace SeleniumConsoleFramework
             var chromeVersion = chromeDriverInstaller.GetChromeVersion();
             Console.WriteLine($"Chrome version {chromeVersion} detected");
 
-            chromeDriverInstaller.Install(ChromeDriverPlatform.Win64, chromeVersion, forceDownload: true);
+            chromeDriverInstaller.Install(ChromeDriverPlatform.Win64, chromeVersion).Wait();
             Console.WriteLine("ChromeDriver installed");
 
             Console.WriteLine("Enter URL to visit:");
