@@ -1,79 +1,63 @@
 ﻿using Microsoft.Win32;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 
 namespace SeleniumConsole
 {
     public class ChromeDriverInstaller
     {
-        private static readonly HttpClient httpClient = new HttpClient
-        {
-            BaseAddress = new Uri("https://chromedriver.storage.googleapis.com/")
-        };
+        private static readonly HttpClient HttpClient = new HttpClient();
 
-        public Task Install() => Install(null, false);
-        public Task Install(string chromeVersion) => Install(chromeVersion, false);
-        public Task Install(bool forceDownload) => Install(null, forceDownload);
+        public Task Install(ChromeDriverPlatform platform) => Install(platform, null, false);
 
-        public async Task Install(string chromeVersion, bool forceDownload)
+        public Task Install(ChromeDriverPlatform platform, string chromeVersion) =>
+            Install(platform, chromeVersion, false);
+
+        public Task Install(ChromeDriverPlatform platform, bool forceDownload) =>
+            Install(platform, null, forceDownload);
+
+        public async Task Install(ChromeDriverPlatform platform, string chromeVersion, bool forceDownload)
         {
-            // Instructions from https://chromedriver.chromium.org/downloads/version-selection
-            //   First, find out which version of Chrome you are using. Let's say you have Chrome 72.0.3626.81.
-            if (chromeVersion == null)
-            {
-                chromeVersion = await GetChromeVersion();
-            }
+            var platformString = GetChromeDriverPlatformString(platform);
+
+            chromeVersion ??= await GetChromeVersion();
 
             //   Take the Chrome version number, remove the last part, 
             chromeVersion = chromeVersion.Substring(0, chromeVersion.LastIndexOf('.'));
-
-            //   and append the result to URL "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_". 
-            //   For example, with Chrome version 72.0.3626.81, you'd get a URL "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_72.0.3626".
-            var chromeDriverVersionResponse = await httpClient.GetAsync($"LATEST_RELEASE_{chromeVersion}");
+            //   and append the result to URL "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_". 
+            //   For example, with Chrome version 72.0.3626.81, you'd get a URL "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_72.0.3626".
+            var chromeDriverVersionResponse = await HttpClient.GetAsync(
+                $"https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_{chromeVersion}"
+            );
             if (!chromeDriverVersionResponse.IsSuccessStatusCode)
             {
                 if (chromeDriverVersionResponse.StatusCode == HttpStatusCode.NotFound)
                 {
                     throw new Exception($"ChromeDriver version not found for Chrome version {chromeVersion}");
                 }
-                else
-                {
-                    throw new Exception($"ChromeDriver version request failed with status code: {chromeDriverVersionResponse.StatusCode}, reason phrase: {chromeDriverVersionResponse.ReasonPhrase}");
-                }
+
+                throw new Exception(
+                    $"ChromeDriver version request failed with status code: {chromeDriverVersionResponse.StatusCode}, " +
+                    $"reason phrase: {chromeDriverVersionResponse.ReasonPhrase}"
+                );
             }
 
             var chromeDriverVersion = await chromeDriverVersionResponse.Content.ReadAsStringAsync();
 
-            string zipName;
-            string driverName;
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                zipName = "chromedriver_win32.zip";
-                driverName = "chromedriver.exe";
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            {
-                zipName = "chromedriver_linux64.zip";
-                driverName = "chromedriver";
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            {
-                zipName = "chromedriver_mac64.zip";
-                driverName = "chromedriver";
-            }
-            else
-            {
-                throw new PlatformNotSupportedException("Your operating system is not supported.");
-            }
+            var driverName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "chromedriver.exe" : "chromedriver";
 
-            string targetPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            var targetPath = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             targetPath = Path.Combine(targetPath, driverName);
             if (!forceDownload && File.Exists(targetPath))
             {
@@ -107,12 +91,24 @@ namespace SeleniumConsole
                 }
             }
 
-            //   Use the URL created in the last step to retrieve a small file containing the version of ChromeDriver to use. For example, the above URL will get your a file containing "72.0.3626.69". (The actual number may change in the future, of course.)
-            //   Use the version number retrieved from the previous step to construct the URL to download ChromeDriver. With version 72.0.3626.69, the URL would be "https://chromedriver.storage.googleapis.com/index.html?path=72.0.3626.69/".
-            var driverZipResponse = await httpClient.GetAsync($"{chromeDriverVersion}/{zipName}");
+            var downloadUrl = (await HttpClient.GetFromJsonAsync<JsonNode>(
+                    "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json"
+                ))
+                ["versions"]?.AsArray()
+                // filter down to matching version
+                .FirstOrDefault(n => n["version"]?.GetValue<string>() == chromeDriverVersion)
+                // get downloads for chromedriver
+                ?["downloads"]?["chromedriver"]?.AsArray()
+                // filter downloads by platform
+                .SingleOrDefault(n => n["platform"]?.GetValue<string>() == platformString)
+                // get URL for platform download
+                ?["url"]?.GetValue<string>();
+
+            var driverZipResponse = await HttpClient.GetAsync(downloadUrl);
             if (!driverZipResponse.IsSuccessStatusCode)
             {
-                throw new Exception($"ChromeDriver download request failed with status code: {driverZipResponse.StatusCode}, reason phrase: {driverZipResponse.ReasonPhrase}");
+                throw new Exception(
+                    $"ChromeDriver download request failed with status code: {driverZipResponse.StatusCode}, reason phrase: {driverZipResponse.ReasonPhrase}");
             }
 
             // this reads the zipfile as a stream, opens the archive, 
@@ -121,7 +117,7 @@ namespace SeleniumConsole
             using (var zipArchive = new ZipArchive(zipFileStream, ZipArchiveMode.Read))
             using (var chromeDriverWriter = new FileStream(targetPath, FileMode.Create))
             {
-                var entry = zipArchive.GetEntry(driverName);
+                var entry = zipArchive.Entries.SingleOrDefault(e => e.Name == driverName);
                 using Stream chromeDriverStream = entry.Open();
                 await chromeDriverStream.CopyToAsync(chromeDriverWriter);
             }
@@ -155,7 +151,9 @@ namespace SeleniumConsole
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                string chromePath = (string)Registry.GetValue("HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe", null, null);
+                var chromePath = (string)Registry.GetValue(
+                    @"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe", null,
+                    null);
                 if (chromePath == null)
                 {
                     throw new Exception("Google Chrome not found in registry");
@@ -164,7 +162,8 @@ namespace SeleniumConsole
                 var fileVersionInfo = FileVersionInfo.GetVersionInfo(chromePath);
                 return fileVersionInfo.FileVersion;
             }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
                 try
                 {
@@ -196,7 +195,8 @@ namespace SeleniumConsole
                     throw new Exception("An error occurred trying to execute 'google-chrome --product-version'", ex);
                 }
             }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
                 try
                 {
@@ -226,13 +226,35 @@ namespace SeleniumConsole
                 }
                 catch (Exception ex)
                 {
-                    throw new Exception($"An error occurred trying to execute '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --version'", ex);
+                    throw new Exception(
+                        $"An error occurred trying to execute '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --version'",
+                        ex
+                    );
                 }
             }
-            else
-            {
-                throw new PlatformNotSupportedException("Your operating system is not supported.");
-            }
+
+            throw new PlatformNotSupportedException("Your operating system is not supported.");
         }
+
+        private static string GetChromeDriverPlatformString(ChromeDriverPlatform platform)
+            => ChromeDriverPlatformMap[platform];
+
+        private static readonly Dictionary<ChromeDriverPlatform, string> ChromeDriverPlatformMap = new()
+        {
+            { ChromeDriverPlatform.Linux64, "linux64" },
+            { ChromeDriverPlatform.MacArm64, "mac-arm64" },
+            { ChromeDriverPlatform.MacX64, "mac-x64" },
+            { ChromeDriverPlatform.Win32, "win32" },
+            { ChromeDriverPlatform.Win64, "win64" },
+        };
+    }
+
+    public enum ChromeDriverPlatform
+    {
+        Linux64,
+        MacArm64,
+        MacX64,
+        Win32,
+        Win64
     }
 }
