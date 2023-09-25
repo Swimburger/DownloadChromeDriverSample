@@ -16,7 +16,7 @@ namespace SeleniumConsole
             var chromeVersion = await chromeDriverInstaller.GetChromeVersion();
             Console.WriteLine($"Chrome version {chromeVersion} detected");
 
-            await chromeDriverInstaller.Install(chromeVersion);
+            await chromeDriverInstaller.Install(ChromeDriverPlatform.MacArm64, chromeVersion);
             Console.WriteLine("ChromeDriver installed");
 
             Console.WriteLine("Enter URL to visit:");
@@ -36,6 +36,7 @@ namespace SeleniumConsole
                 chromeDriver.Navigate().GoToUrl(url);
                 Console.WriteLine($"Page title: {chromeDriver.Title}");
             }
+
             Console.WriteLine("Press any key to exit");
             Console.ReadKey();
         }
