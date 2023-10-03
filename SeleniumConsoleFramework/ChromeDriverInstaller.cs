@@ -78,7 +78,6 @@ namespace SeleniumConsoleFramework
                     string existingChromeDriverVersion = await process.StandardOutput.ReadToEndAsync();
                     string error = await process.StandardError.ReadToEndAsync();
                     process.WaitForExit();
-                    process.Kill();
 
                     // expected output is something like "ChromeDriver 88.0.4324.96 (68dba2d8a0b149a1d3afac56fa74648032bcf46b-refs/branch-heads/4324@{#1784})"
                     // the following line will extract the version number and leave the rest
